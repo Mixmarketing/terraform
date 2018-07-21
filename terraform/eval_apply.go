@@ -8,8 +8,9 @@ import (
 	"github.com/zclconf/go-cty/cty/gocty"
 
 	"github.com/hashicorp/terraform/addrs"
-	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/configs"
+	"github.com/hashicorp/terraform/plans"
+	"github.com/hashicorp/terraform/states"
 	"github.com/hashicorp/terraform/tfdiags"
 )
 
@@ -17,122 +18,105 @@ import (
 // the full diff.
 type EvalApply struct {
 	Addr      addrs.ResourceInstance
-	State     **InstanceState
-	Diff      **InstanceDiff
+	State     **states.ResourceInstanceObject
+	Diff      **plans.ResourceInstanceChange
 	Provider  *ResourceProvider
-	Output    **InstanceState
+	Output    **states.ResourceInstanceObject
 	CreateNew *bool
 	Error     *error
 }
 
 // TODO: test
 func (n *EvalApply) Eval(ctx EvalContext) (interface{}, error) {
-	diff := *n.Diff
-	provider := *n.Provider
-	state := *n.State
+	return nil, fmt.Errorf("EvalApply is not yet updated for the new state and plan types")
+	/*
+		diff := *n.Diff
+		provider := *n.Provider
+		state := *n.State
 
-	// The provider API still expects our legacy InstanceInfo type, so we must shim it.
-	legacyInfo := NewInstanceInfo(n.Addr.Absolute(ctx.Path()))
+		// The provider API still expects our legacy InstanceInfo type, so we must shim it.
+		legacyInfo := NewInstanceInfo(n.Addr.Absolute(ctx.Path()))
 
-	if diff.Empty() {
-		log.Printf("[DEBUG] apply %s: diff is empty, so skipping.", n.Addr)
+		if state == nil {
+			state = &states.ResourceInstanceObject{}
+		}
+
+		// Flag if we're creating a new instance
+		if n.CreateNew != nil {
+			*n.CreateNew = state.ID == "" && !diff.GetDestroy() || diff.RequiresNew()
+		}
+
+		// With the completed diff, apply!
+		log.Printf("[DEBUG] apply %s: executing Apply", n.Addr)
+		state, err := provider.Apply(legacyInfo, state, diff)
+		if state == nil {
+			state = new(InstanceState)
+		}
+		state.init()
+
+		// Force the "id" attribute to be our ID
+		if state.ID != "" {
+			state.Attributes["id"] = state.ID
+		}
+
+		// If the value is the unknown variable value, then it is an error.
+		// In this case we record the error and remove it from the state
+		for ak, av := range state.Attributes {
+			if av == config.UnknownVariableValue {
+				err = multierror.Append(err, fmt.Errorf(
+					"Attribute with unknown value: %s", ak))
+				delete(state.Attributes, ak)
+			}
+		}
+
+		// If the provider produced an InstanceState with an empty id then
+		// that really means that there's no state at all.
+		// FIXME: Change the provider protocol so that the provider itself returns
+		// a null in this case, and stop treating the ID as special.
+		if state.ID == "" {
+			state = nil
+		}
+
+		// Write the final state
+		if n.Output != nil {
+			*n.Output = state
+		}
+
+		// If there are no errors, then we append it to our output error
+		// if we have one, otherwise we just output it.
+		if err != nil {
+			if n.Error != nil {
+				helpfulErr := fmt.Errorf("%s: %s", n.Addr, err.Error())
+				*n.Error = multierror.Append(*n.Error, helpfulErr)
+			} else {
+				return nil, err
+			}
+		}
+
 		return nil, nil
-	}
-
-	// Remove any output values from the diff
-	for k, ad := range diff.CopyAttributes() {
-		if ad.Type == DiffAttrOutput {
-			diff.DelAttribute(k)
-		}
-	}
-
-	// If the state is nil, make it non-nil
-	if state == nil {
-		state = new(InstanceState)
-	}
-	state.init()
-
-	// Flag if we're creating a new instance
-	if n.CreateNew != nil {
-		*n.CreateNew = state.ID == "" && !diff.GetDestroy() || diff.RequiresNew()
-	}
-
-	// With the completed diff, apply!
-	log.Printf("[DEBUG] apply %s: executing Apply", n.Addr)
-	state, err := provider.Apply(legacyInfo, state, diff)
-	if state == nil {
-		state = new(InstanceState)
-	}
-	state.init()
-
-	// Force the "id" attribute to be our ID
-	if state.ID != "" {
-		state.Attributes["id"] = state.ID
-	}
-
-	// If the value is the unknown variable value, then it is an error.
-	// In this case we record the error and remove it from the state
-	for ak, av := range state.Attributes {
-		if av == config.UnknownVariableValue {
-			err = multierror.Append(err, fmt.Errorf(
-				"Attribute with unknown value: %s", ak))
-			delete(state.Attributes, ak)
-		}
-	}
-
-	// If the provider produced an InstanceState with an empty id then
-	// that really means that there's no state at all.
-	// FIXME: Change the provider protocol so that the provider itself returns
-	// a null in this case, and stop treating the ID as special.
-	if state.ID == "" {
-		state = nil
-	}
-
-	// Write the final state
-	if n.Output != nil {
-		*n.Output = state
-	}
-
-	// If there are no errors, then we append it to our output error
-	// if we have one, otherwise we just output it.
-	if err != nil {
-		if n.Error != nil {
-			helpfulErr := fmt.Errorf("%s: %s", n.Addr, err.Error())
-			*n.Error = multierror.Append(*n.Error, helpfulErr)
-		} else {
-			return nil, err
-		}
-	}
-
-	return nil, nil
+	*/
 }
 
 // EvalApplyPre is an EvalNode implementation that does the pre-Apply work
 type EvalApplyPre struct {
-	Addr  addrs.ResourceInstance
-	State **InstanceState
-	Diff  **InstanceDiff
+	Addr   addrs.ResourceInstance
+	Gen    states.Generation
+	State  **states.ResourceInstanceObject
+	Change **plans.ResourceInstanceChange
 }
 
 // TODO: test
 func (n *EvalApplyPre) Eval(ctx EvalContext) (interface{}, error) {
 	state := *n.State
-	diff := *n.Diff
+	change := *n.Change
 
-	// The hook API still uses our legacy InstanceInfo type, so we must
-	// shim it.
-	legacyInfo := NewInstanceInfo(n.Addr.Absolute(ctx.Path()))
+	if resourceHasUserVisibleApply(n.Addr) {
+		// TODO: Need to get schema into here so we have the type to work with
+		priorState := change.Before.Decode(ty)
+		plannedNewState := change.After.Decode(ty)
 
-	// If the state is nil, make it non-nil
-	if state == nil {
-		state = new(InstanceState)
-	}
-	state.init()
-
-	if resourceHasUserVisibleApply(legacyInfo) {
-		// Call post-apply hook
 		err := ctx.Hook(func(h Hook) (HookAction, error) {
-			return h.PreApply(legacyInfo, state, diff)
+			return h.PreApply(n.Addr, n.Gen, priorState, plannedNewState)
 		})
 		if err != nil {
 			return nil, err
@@ -145,7 +129,8 @@ func (n *EvalApplyPre) Eval(ctx EvalContext) (interface{}, error) {
 // EvalApplyPost is an EvalNode implementation that does the post-Apply work
 type EvalApplyPost struct {
 	Addr  addrs.ResourceInstance
-	State **InstanceState
+	Gen   states.Generation
+	State **states.ResourceInstanceObject
 	Error *error
 }
 
@@ -153,17 +138,19 @@ type EvalApplyPost struct {
 func (n *EvalApplyPost) Eval(ctx EvalContext) (interface{}, error) {
 	state := *n.State
 
-	// The hook API still uses our legacy InstanceInfo type, so we must
-	// shim it.
-	legacyInfo := NewInstanceInfo(n.Addr.Absolute(ctx.Path()))
+	if resourceHasUserVisibleApply(n.Addr) {
+		// TODO: Need to get schema into here so we have the type to work with
+		newState := state.Value(ty)
+		var err error
+		if n.Error != nil {
+			err = *n.Error
+		}
 
-	if resourceHasUserVisibleApply(legacyInfo) {
-		// Call post-apply hook
-		err := ctx.Hook(func(h Hook) (HookAction, error) {
-			return h.PostApply(legacyInfo, state, *n.Error)
+		hookErr := ctx.Hook(func(h Hook) (HookAction, error) {
+			return h.PostApply(n.Addr, n.Gen, newState, err)
 		})
-		if err != nil {
-			return nil, err
+		if hookErr != nil {
+			return nil, hookErr
 		}
 	}
 
@@ -175,15 +162,13 @@ func (n *EvalApplyPost) Eval(ctx EvalContext) (interface{}, error) {
 //
 // Certain resources do apply actions only as an implementation detail, so
 // these should not be advertised to code outside of this package.
-func resourceHasUserVisibleApply(info *InstanceInfo) bool {
-	addr := info.ResourceAddress()
-
+func resourceHasUserVisibleApply(addr addrs.ResourceInstance) bool {
 	// Only managed resources have user-visible apply actions.
 	// In particular, this excludes data resources since we "apply" these
 	// only as an implementation detail of removing them from state when
 	// they are destroyed. (When reading, they don't get here at all because
 	// we present them as "Refresh" actions.)
-	return addr.Mode == config.ManagedResourceMode
+	return addr.ContainingResource().Mode == addrs.ManagedResourceMode
 }
 
 // EvalApplyProvisioners is an EvalNode implementation that executes
@@ -193,7 +178,7 @@ func resourceHasUserVisibleApply(info *InstanceInfo) bool {
 // ApplyProvisioner (single) that is looped over.
 type EvalApplyProvisioners struct {
 	Addr           addrs.ResourceInstance
-	State          **InstanceState
+	State          **states.ResourceInstanceObject
 	ResourceConfig *configs.Resource
 	CreateNew      *bool
 	Error          *error
@@ -229,7 +214,7 @@ func (n *EvalApplyProvisioners) Eval(ctx EvalContext) (interface{}, error) {
 
 	if n.Error != nil && *n.Error != nil {
 		if taint {
-			state.Tainted = true
+			state.Status = states.ObjectTainted
 		}
 
 		// We're already tainted, so just return out
@@ -239,7 +224,8 @@ func (n *EvalApplyProvisioners) Eval(ctx EvalContext) (interface{}, error) {
 	{
 		// Call pre hook
 		err := ctx.Hook(func(h Hook) (HookAction, error) {
-			return h.PreProvisionResource(legacyInfo, state)
+			stateObj := state.Value(ty)
+			return h.PreProvisionInstance(n.Addr, stateObj)
 		})
 		if err != nil {
 			return nil, err
